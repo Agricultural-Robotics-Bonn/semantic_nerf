@@ -97,15 +97,26 @@ class ReplicaDatasetCache(Dataset):
             self.train_samples[key] = np.asarray(self.train_samples[key])
             self.test_samples[key] = np.asarray(self.test_samples[key])
 
+        # semantic classes
         self.semantic_classes = np.unique(
             np.concatenate(
                 (np.unique(self.train_samples["semantic"]), 
             np.unique(self.test_samples["semantic"])))).astype(np.uint8)
         self.num_semantic_class = self.semantic_classes.shape[0]  # number of semantic classes, including the void class of 0
-
+        
         self.colour_map_np = label_colormap()[self.semantic_classes]
         self.mask_ids = np.ones(self.train_num)  # init self.mask_ids as full ones
         # 1 means the correspinding label map is used for semantic loss during training, while 0 means no semantic loss is applied on this frame
+
+        # semantic instances
+        self.semantic_instace_ids = np.unique(
+            np.concatenate(
+                (np.unique(self.train_samples["instance"]), 
+            np.unique(self.test_samples["instance"])))).astype(np.uint16)
+        self.num_instances = self.semantic_instace_ids.shape[0]
+
+        self.colour_map_instance_np = label_colormap()[self.semantic_instace_ids]
+
 
         # remap existing semantic class labels to continuous label ranging from 0 to num_class-1
         self.train_samples["semantic_clean"] = self.train_samples["semantic"].copy()
@@ -119,6 +130,17 @@ class ReplicaDatasetCache(Dataset):
             self.train_samples["semantic_remap_clean"][self.train_samples["semantic_clean"]== self.semantic_classes[i]] = i
             self.test_samples["semantic_remap"][self.test_samples["semantic"]== self.semantic_classes[i]] = i
 
+        # remap existing semantic instances to continuous instance id ranging from 0 to max_id-1
+        self.train_samples["instance_clean"] = self.train_samples["instance"].copy()
+        self.train_samples["instance_remap"] = self.train_samples["instance"].copy()
+        self.train_samples["instance_remap_clean"] = self.train_samples["instance_clean"].copy()
+
+        self.test_samples["instance_remap"] = self.test_samples["instance"].copy()
+
+        for i in range(self.num_semantic_class):
+            self.train_samples["instance_remap"][self.train_samples["instance"]== self.semantic_classes[i]] = i
+            self.train_samples["instance_remap_clean"][self.train_samples["instance_clean"]== self.semantic_classes[i]] = i
+            self.test_samples["instance_remap"][self.test_samples["instance"]== self.semantic_classes[i]] = i
 
         print()
         print("Training Sample Summary:")
