@@ -36,8 +36,10 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64
 
 
 
-def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, enable_semantic=True, 
-                num_sem_class=0, endpoint_feat=False):
+def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False,
+                enable_semantic=True, num_sem_class=0,
+                enable_instance=True, num_instances=0,
+                endpoint_feat=False):
     """Transforms model's predictions to semantically meaningful values.
     Args:
         raw: [num_rays, num_samples along ray, 4]. Prediction from model.
@@ -80,13 +82,27 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, enable_s
     rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
     # [N_rays, 3], the accumulated opacity along the rays, equals "1 - (1-a1)(1-a2)...(1-an)" mathematically
 
+    sem_start_idx = 4
+    instance_start_idx = 4
+    if enable_semantic and enable_instance:
+        instance_start_idx += num_sem_class
+
+
     if enable_semantic:
         assert num_sem_class>0
         # https://discuss.pytorch.org/t/multi-class-cross-entropy-loss-and-softmax-in-pytorch/24920/2
-        sem_logits = raw[..., 4:4+num_sem_class]  # [N_rays, N_samples, num_class]
+        sem_logits = raw[..., sem_start_idx:sem_start_idx+num_sem_class]  # [N_rays, N_samples, num_class]
         sem_map = torch.sum(weights[..., None] * sem_logits, -2)  # [N_rays, num_class]
     else:
         sem_map = torch.tensor(0)
+    
+    if enable_instance:
+        assert num_instances>0
+        # https://discuss.pytorch.org/t/multi-class-cross-entropy-loss-and-softmax-in-pytorch/24920/2
+        instance_logits = raw[..., instance_start_idx:instance_start_idx+num_instances]  # [N_rays, N_samples, num_class]
+        instance_map = torch.sum(weights[..., None] * instance_logits, -2)  # [N_rays, num_class]
+    else:
+        instance_map = torch.tensor(0)
 
 
     if endpoint_feat:
@@ -104,5 +120,5 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, enable_s
         if enable_semantic:
             sem_map = sem_map + (1.-acc_map[..., None])
     
-    return rgb_map, disp_map, acc_map, weights, depth_map, sem_map, feat_map
+    return rgb_map, disp_map, acc_map, weights, depth_map, sem_map, instance_map, feat_map
 

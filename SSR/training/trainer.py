@@ -814,9 +814,11 @@ class SSRTrainer(object):
         raw_noise_std = self.raw_noise_std if self.training else 0
         raw_coarse = run_network(pts_coarse_sampled, viewdirs, self.ssr_net_coarse,
                                  self.embed_fn, self.embeddirs_fn, netchunk=self.netchunk)
-        rgb_coarse, disp_coarse, acc_coarse, weights_coarse, depth_coarse, sem_logits_coarse, feat_map_coarse = \
-            raw2outputs(raw_coarse, z_vals, rays_d, raw_noise_std, self.white_bkgd, enable_semantic = self.enable_semantic,
-            num_sem_class = self.num_valid_semantic_class, endpoint_feat = False)
+        rgb_coarse, disp_coarse, acc_coarse, weights_coarse, depth_coarse, sem_logits_coarse, instance_logits_coarse, feat_map_coarse = \
+            raw2outputs(raw_coarse, z_vals, rays_d, raw_noise_std, self.white_bkgd,
+            enable_semantic = self.enable_semantic, num_sem_class = self.num_valid_semantic_class,
+            enable_instance = self.enable_instance, num_instances = self.num_instaces,
+            endpoint_feat = False)
 
 
         if self.N_importance > 0:
@@ -834,9 +836,11 @@ class SSRTrainer(object):
             raw_fine = run_network(pts_fine_sampled, viewdirs, lambda x: self.ssr_net_fine(x, self.endpoint_feat),
                         self.embed_fn, self.embeddirs_fn, netchunk=self.netchunk)
 
-            rgb_fine, disp_fine, acc_fine, weights_fine, depth_fine, sem_logits_fine, feat_map_fine = \
-                raw2outputs(raw_fine, z_vals, rays_d, raw_noise_std, self.white_bkgd, enable_semantic = self.enable_semantic,
-                num_sem_class = self.num_valid_semantic_class, endpoint_feat = self.endpoint_feat)
+            rgb_fine, disp_fine, acc_fine, weights_fine, depth_fine, sem_logits_fine, instance_logits_fine, feat_map_fine = \
+                raw2outputs(raw_fine, z_vals, rays_d, raw_noise_std, self.white_bkgd,
+                enable_semantic = self.enable_semantic, num_sem_class = self.num_valid_semantic_class,
+                enable_instance = self.enable_instance, num_instances = self.num_instaces,
+                endpoint_feat = self.endpoint_feat)
 
         ret = {}
         ret['raw_coarse'] = raw_coarse
@@ -846,6 +850,8 @@ class SSRTrainer(object):
         ret['depth_coarse'] = depth_coarse
         if self.enable_semantic:
             ret['sem_logits_coarse'] = sem_logits_coarse
+        if self.enable_instance:
+            ret['instance_logits_coarse'] = instance_logits_coarse
 
         if self.N_importance > 0:
             ret['rgb_fine'] = rgb_fine
@@ -854,6 +860,8 @@ class SSRTrainer(object):
             ret['depth_fine'] = depth_fine
             if self.enable_semantic:
                 ret['sem_logits_fine'] = sem_logits_fine
+            if self.enable_instance:
+                ret['instance_logits_fine'] = instance_logits_fine
             ret['z_std'] = torch.std(z_samples, dim=-1, unbiased=False)  # [N_rays]
             ret['raw_fine'] = raw_fine  # model's raw, unprocessed predictions.
             if self.endpoint_feat:
