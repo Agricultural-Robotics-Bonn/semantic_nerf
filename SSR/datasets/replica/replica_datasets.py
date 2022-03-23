@@ -112,7 +112,7 @@ class ReplicaDatasetCache(Dataset):
         self.semantic_instace_ids = np.unique(
             np.concatenate(
                 (np.unique(self.train_samples["instance"]), 
-            np.unique(self.test_samples["instance"])))).astype(np.uint16)
+            np.unique(self.test_samples["instance"])))).astype(np.int32)
         self.num_instances = self.semantic_instace_ids.shape[0]
 
         self.colour_map_instance_np = label_colormap()[self.semantic_instace_ids]
@@ -131,11 +131,11 @@ class ReplicaDatasetCache(Dataset):
             self.test_samples["semantic_remap"][self.test_samples["semantic"]== self.semantic_classes[i]] = i
 
         # remap existing semantic instances to continuous instance id ranging from 0 to max_id-1
-        self.train_samples["instance_clean"] = self.train_samples["instance"].copy()
-        self.train_samples["instance_remap"] = self.train_samples["instance"].copy()
+        self.train_samples["instance_clean"] = self.train_samples["instance"].astype(np.int32).copy()
+        self.train_samples["instance_remap"] = self.train_samples["instance"].astype(np.int32).copy()
         self.train_samples["instance_remap_clean"] = self.train_samples["instance_clean"].copy()
 
-        self.test_samples["instance_remap"] = self.test_samples["instance"].copy()
+        self.test_samples["instance_remap"] = self.test_samples["instance"].astype(np.int32).copy()
 
         for i in range(self.num_semantic_class):
             self.train_samples["instance_remap"][self.train_samples["instance"]== self.semantic_classes[i]] = i
