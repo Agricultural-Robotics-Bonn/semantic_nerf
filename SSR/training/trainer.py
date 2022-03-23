@@ -108,6 +108,7 @@ class SSRTrainer(object):
 
     def set_params(self):
         self.enable_semantic = self.config["experiment"]["enable_semantic"]
+        self.enable_instance = self.config["experiment"]["enable_instance"]
 
         #render options
         self.n_rays = eval(self.config["render"]["N_rays"])  if isinstance(self.config["render"]["N_rays"], str) \
@@ -858,9 +859,20 @@ class SSRTrainer(object):
             embeddirs_fn, input_ch_views = get_embedder(self.config["render"]["multires_views"],
                                                         self.config["render"]["i_embed"],
                                                         scalar_factor=1)
+        # extra output channel if resampling fine NeRF
         output_ch = 5 if self.N_importance > 0 else 4
+
+        # Coordinate encoder skip depth
         skips = [4]
+        # numper of predicted instances
+        num_predicted_instances = 0
+        if "num_predicted_instances" in self.config["model"].keys():
+            num_predicted_instances =  self.config["model"]["num_predicted_instances"]
+        elif self.enable_instance:
+            num_predicted_instances = self.num_instaces
+
         model = nerf_model(enable_semantic = self.enable_semantic, num_semantic_classes=self.num_valid_semantic_class,
+                     enable_instance = self.enable_instance, num_instances=num_predicted_instances,
                      D=self.config["model"]["netdepth"], W=self.config["model"]["netwidth"],
                      input_ch=input_ch, output_ch=output_ch, skips=skips,
                      input_ch_views=input_ch_views, use_viewdirs=self.config["render"]["use_viewdirs"]).cuda()
@@ -868,7 +880,8 @@ class SSRTrainer(object):
 
         model_fine = None
         if self.N_importance > 0:
-            model_fine = nerf_model(enable_semantic = self.enable_semantic, num_semantic_classes=self.num_valid_semantic_class, 
+            model_fine = nerf_model(enable_semantic = self.enable_semantic, num_semantic_classes=self.num_valid_semantic_class,
+                              enable_instance = self.enable_instance, num_instances=num_predicted_instances,
                               D=self.config["model"]["netdepth_fine"], W=self.config["model"]["netwidth_fine"],
                               input_ch=input_ch, output_ch=output_ch, skips=skips,
                               input_ch_views=input_ch_views, use_viewdirs=self.config["render"]["use_viewdirs"]).cuda()
