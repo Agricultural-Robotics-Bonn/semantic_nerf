@@ -675,15 +675,21 @@ class SSRTrainer(object):
 
         if mode == "train":
             image = self.train_image
-            if self.enable_semantic:
+            if self.enable_semantic or self.enable_instance:
                 depth = self.train_depth
+            if self.enable_semantic:
                 semantic = self.train_semantic
+            if self.enable_instance:
+                instance = self.train_instance
             sample_num = self.num_train
         elif mode == "test":
             image = self.test_image
-            if self.enable_semantic:
+            if self.enable_semantic or self.enable_instance:
                 depth = self.test_depth
+            if self.enable_semantic:
                 semantic = self.test_semantic
+            if self.enable_instance:
+                instance = self.test_instance
             sample_num = self.num_test
         elif mode == "vis":
             assert False
@@ -692,6 +698,7 @@ class SSRTrainer(object):
 
         # sample rays and ground truth data
         sematic_available_flag = 1
+        instance_available_flag = 1
 
         if no_batching:  # sample random pixels from one random images
             index_batch, index_hw = sampling_index(self.n_rays, num_img, h, w)
@@ -699,11 +706,16 @@ class SSRTrainer(object):
 
             flat_sampled_rays = sampled_rays.reshape([-1, ray_dim]).float()
             gt_image = image.reshape(sample_num, -1, 3)[index_batch, index_hw, :].reshape(-1, 3)
-            if self.enable_semantic:
+            if self.enable_semantic or self.enable_instance:
                 gt_depth = depth.reshape(sample_num, -1)[index_batch, index_hw].reshape(-1)
+            if self.enable_semantic:
                 sematic_available_flag = self.mask_ids[index_batch] # semantic available if mask_id is 1 (train with rgb loss and semantic loss) else 0 (train with rgb loss only)
                 gt_semantic = semantic.reshape(sample_num, -1)[index_batch, index_hw].reshape(-1)
                 gt_semantic = gt_semantic.cuda()  
+            if self.enable_instance:
+                instance_available_flag = self.mask_ids[index_batch]
+                gt_instance = instance.reshape(sample_num, -1)[index_batch, index_hw].reshape(-1)
+                gt_instance = gt_instance.cuda()
         else:  # sample from all random pixels
 
             index_hw = self.rand_idx[self.i_batch:self.i_batch+self.n_rays]
@@ -711,10 +723,14 @@ class SSRTrainer(object):
             flat_rays = rays.reshape([-1, ray_dim]).float()
             flat_sampled_rays = flat_rays[index_hw, :]
             gt_image = image.reshape(-1, 3)[index_hw, :]
-            if self.enable_semantic:
+            if self.enable_semantic or self.enable_instance:
                 gt_depth = depth.reshape(-1)[index_hw]
+            if self.enable_semantic:
                 gt_semantic = semantic.reshape(-1)[index_hw]
                 gt_semantic = gt_semantic.cuda()  
+            if self.enable_instance:
+                gt_instance = instance.reshape(-1)[index_hw]
+                gt_instance = gt_instance.cuda()
 
             self.i_batch += self.n_rays
             if self.i_batch >= total_ray_num:
@@ -724,14 +740,19 @@ class SSRTrainer(object):
 
         sampled_rays = flat_sampled_rays
         sampled_gt_rgb = gt_image
+
+        return_list = [sampled_rays, sampled_gt_rgb]
+
+        if self.enable_semantic or self.enable_instance:
+            return_list += gt_depth
+
         if self.enable_semantic:
-            sampled_gt_depth = gt_depth
+            return_list += [gt_semantic.long(), sematic_available_flag] # required long type for nn.NLL or nn.crossentropy
 
-            sampled_gt_semantic = gt_semantic.long()  # required long type for nn.NLL or nn.crossentropy
+        if self.enable_instance:
+            return_list += [gt_instance.long(), instance_available_flag] # required long type for nn.NLL or nn.crossentropy
 
-            return sampled_rays, sampled_gt_rgb, sampled_gt_depth, sampled_gt_semantic, sematic_available_flag
-        else:
-            return sampled_rays, sampled_gt_rgb
+        return tuple(return_list)
 
     def render_rays(self, flat_rays):
         """
@@ -905,6 +926,7 @@ class SSRTrainer(object):
         img2mse = lambda x, y: torch.mean((x - y) ** 2)
         mse2psnr = lambda x: -10. * torch.log(x) / torch.log(torch.Tensor([10.]).cuda())
         CrossEntropyLoss = nn.CrossEntropyLoss(ignore_index=self.ignore_label)
+        crossentropy_loss_instance = nn.CrossEntropyLoss()
         KLDLoss = nn.KLDivLoss(reduction="none")
         kl_loss = lambda input_log_prob,target_prob: KLDLoss(input_log_prob, target_prob) 
         # this function assume input is already in log-probabilities 
@@ -923,11 +945,17 @@ class SSRTrainer(object):
 
         # sample rays to query and optimise
         sampled_data = self.sample_data(global_step, self.rays, self.H, self.W, no_batching=True, mode="train")
+        
+        sampled_rays, sampled_gt_rgb = sampled_data[:2]
+        if self.enable_semantic or self.enable_instance:
+            sampled_gt_depth = sampled_data[2]
         if self.enable_semantic:
-            sampled_rays, sampled_gt_rgb, sampled_gt_depth, sampled_gt_semantic, sematic_available = sampled_data
-        else:
-            sampled_rays, sampled_gt_rgb = sampled_data
-                    
+            sampled_gt_semantic, sematic_available = sampled_data[3:5]
+        if self.enable_instance and not self.enable_semantic:
+            sampled_gt_instance, instance_available = sampled_data[3:5]
+        elif self.enable_instance:
+            sampled_gt_instance, instance_available = sampled_data[5:7]
+
         output_dict = self.render_rays(sampled_rays)
 
         rgb_coarse = output_dict["rgb_coarse"]  # N_rays x 3
