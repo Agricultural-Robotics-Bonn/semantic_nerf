@@ -744,13 +744,14 @@ class SSRTrainer(object):
         return_list = [sampled_rays, sampled_gt_rgb]
 
         if self.enable_semantic or self.enable_instance:
-            return_list += gt_depth
+            return_list.append(gt_depth)
 
         if self.enable_semantic:
-            return_list += [gt_semantic.long(), sematic_available_flag] # required long type for nn.NLL or nn.crossentropy
-
+            return_list.append(gt_semantic.long()) # required long type for nn.NLL or nn.crossentropy
+            return_list.append(sematic_available_flag)
         if self.enable_instance:
-            return_list += [gt_instance.long(), instance_available_flag] # required long type for nn.NLL or nn.crossentropy
+            return_list.append(gt_instance.long())# required long type for nn.NLL or nn.crossentropy
+            return_list.append(instance_available_flag)
 
         return tuple(return_list)
 
