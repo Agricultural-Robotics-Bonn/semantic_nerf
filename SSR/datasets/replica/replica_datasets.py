@@ -15,8 +15,11 @@ class ReplicaDatasetCache(Dataset):
         self.depth_dir = os.path.join(data_dir, "depth")  # depth is in mm uint
         self.semantic_class_dir = os.path.join(data_dir, "semantic_class")
         self.semantic_instance_dir = os.path.join(data_dir, "semantic_instance")
+        self.inst_shuffled_dir = os.path.join(data_dir, "semantic_shuffled")
         if not os.path.exists(self.semantic_instance_dir):
             self.semantic_instance_dir = None
+        if not os.path.exists(self.inst_shuffled_dir):
+            self.inst_shuffled_dir = None
 
 
         self.train_ids = train_ids
@@ -34,14 +37,16 @@ class ReplicaDatasetCache(Dataset):
         self.semantic_list = sorted(glob.glob(self.semantic_class_dir + '/semantic_class_*.png'), key=lambda file_name: int(file_name.split("_")[-1][:-4]))
         if self.semantic_instance_dir is not None:
             self.instance_list = sorted(glob.glob(self.semantic_instance_dir + '/semantic_instance_*.png'), key=lambda file_name: int(file_name.split("_")[-1][:-4]))
+        if self.inst_shuffled_dir is not None:
+            self.inst_shuffled_list = sorted(glob.glob(self.inst_shuffled_dir + '/semantic_instance_shuffled_*.png'), key=lambda file_name: int(file_name.split("_")[-1][:-4]))
 
         self.train_samples = {'image': [], 'depth': [],
                           'semantic': [], 'T_wc': [],
-                          'instance': []}
+                          'instance': [], 'inst_shuffled': []}
 
         self.test_samples = {'image': [], 'depth': [],
                           'semantic': [], 'T_wc': [],
-                          'instance': []}
+                          'instance': [], 'inst_shuffled': []}
 
        # training samples
         for idx in train_ids:
@@ -50,6 +55,8 @@ class ReplicaDatasetCache(Dataset):
             semantic = cv2.imread(self.semantic_list[idx], cv2.IMREAD_UNCHANGED)
             if self.semantic_instance_dir is not None:
                 instance = cv2.imread(self.instance_list[idx], cv2.IMREAD_UNCHANGED) # uint16
+            if self.inst_shuffled_dir is not None:
+                inst_shuffled = cv2.imread(self.inst_shuffled_list[idx], cv2.IMREAD_UNCHANGED) # uint16
 
             if (self.img_h is not None and self.img_h != image.shape[0]) or \
                     (self.img_w is not None and self.img_w != image.shape[1]):
@@ -58,6 +65,8 @@ class ReplicaDatasetCache(Dataset):
                 semantic = cv2.resize(semantic, (self.img_w, self.img_h), interpolation=cv2.INTER_NEAREST)
                 if self.semantic_instance_dir is not None:
                     instance = cv2.resize(instance, (self.img_w, self.img_h), interpolation=cv2.INTER_NEAREST)
+                if self.inst_shuffled_dir is not None:
+                    inst_shuffled = cv2.resize(inst_shuffled, (self.img_w, self.img_h), interpolation=cv2.INTER_NEAREST)
 
             T_wc = self.Ts_full[idx]
 
@@ -66,6 +75,8 @@ class ReplicaDatasetCache(Dataset):
             self.train_samples["semantic"].append(semantic)
             if self.semantic_instance_dir is not None:
                 self.train_samples["instance"].append(instance)
+            if self.inst_shuffled_dir is not None:
+                self.train_samples["inst_shuffled"].append(inst_shuffled)
             self.train_samples["T_wc"].append(T_wc)
 
 
@@ -76,6 +87,8 @@ class ReplicaDatasetCache(Dataset):
             semantic = cv2.imread(self.semantic_list[idx], cv2.IMREAD_UNCHANGED)
             if self.semantic_instance_dir is not None:
                 instance = cv2.imread(self.instance_list[idx], cv2.IMREAD_UNCHANGED) # uint16
+            if self.inst_shuffled_dir is not None:
+                inst_shuffled = cv2.imread(self.inst_shuffled_list[idx], cv2.IMREAD_UNCHANGED) # uint16
 
             if (self.img_h is not None and self.img_h != image.shape[0]) or \
                     (self.img_w is not None and self.img_w != image.shape[1]):
@@ -84,6 +97,8 @@ class ReplicaDatasetCache(Dataset):
                 semantic = cv2.resize(semantic, (self.img_w, self.img_h), interpolation=cv2.INTER_NEAREST)
                 if self.semantic_instance_dir is not None:
                     instance = cv2.resize(instance, (self.img_w, self.img_h), interpolation=cv2.INTER_NEAREST)
+                if self.inst_shuffled_dir is not None:
+                    inst_shuffled = cv2.resize(inst_shuffled, (self.img_w, self.img_h), interpolation=cv2.INTER_NEAREST)
             T_wc = self.Ts_full[idx]
 
             self.test_samples["image"].append(image)
@@ -91,6 +106,8 @@ class ReplicaDatasetCache(Dataset):
             self.test_samples["semantic"].append(semantic)
             if self.semantic_instance_dir is not None:
                 self.test_samples["instance"].append(instance)
+            if self.inst_shuffled_dir is not None:
+                self.test_samples["inst_shuffled"].append(inst_shuffled)
             self.test_samples["T_wc"].append(T_wc)
 
         for key in self.test_samples.keys():  # transform list of np array to array with batch dimension
@@ -109,13 +126,13 @@ class ReplicaDatasetCache(Dataset):
         # 1 means the correspinding label map is used for semantic loss during training, while 0 means no semantic loss is applied on this frame
 
         # semantic instances
-        self.semantic_instace_ids = np.unique(
+        self.semantic_instance_ids = np.unique(
             np.concatenate(
                 (np.unique(self.train_samples["instance"]), 
             np.unique(self.test_samples["instance"])))).astype(np.int32)
-        self.num_instances = self.semantic_instace_ids.shape[0]
+        self.num_instances = self.semantic_instance_ids.shape[0]
 
-        self.colour_map_instance_np = label_colormap()[self.semantic_instace_ids]
+        self.colour_map_instance_np = label_colormap()[self.semantic_instance_ids]
 
 
         # remap existing semantic class labels to continuous label ranging from 0 to num_class-1
@@ -137,10 +154,21 @@ class ReplicaDatasetCache(Dataset):
 
         self.test_samples["instance_remap"] = self.test_samples["instance"].astype(np.int32).copy()
 
-        for i in range(self.num_semantic_class):
-            self.train_samples["instance_remap"][self.train_samples["instance"]== self.semantic_classes[i]] = i
-            self.train_samples["instance_remap_clean"][self.train_samples["instance_clean"]== self.semantic_classes[i]] = i
-            self.test_samples["instance_remap"][self.test_samples["instance"]== self.semantic_classes[i]] = i
+        for i in range(self.semantic_instance_ids):
+            self.train_samples["instance_remap"][self.train_samples["instance"]== self.semantic_instance_ids[i]] = i
+            self.train_samples["instance_remap_clean"][self.train_samples["instance_clean"]== self.semantic_instance_ids[i]] = i
+            self.test_samples["instance_remap"][self.test_samples["instance"]== self.semantic_instance_ids[i]] = i
+
+        # remap existing semantic shuffled inst_shuffleds to continuous inst_shuffled id ranging from 0 to max_id-1
+        self.train_samples["inst_shuffled_clean"] = self.train_samples["inst_shuffled"].astype(np.int32).copy()
+        self.train_samples["inst_shuffled_remap"] = self.train_samples["inst_shuffled"].astype(np.int32).copy()
+        self.train_samples["inst_shuffled_remap_clean"] = self.train_samples["inst_shuffled_clean"].copy()
+
+        self.test_samples["inst_shuffled_remap"] = self.test_samples["inst_shuffled"].astype(np.int32).copy()
+        for i in range(self.semantic_inst_shuffled_ids):
+            self.train_samples["inst_shuffled_remap"][self.train_samples["inst_shuffled"]== self.semantic_instance_ids[i]] = i
+            self.train_samples["inst_shuffled_remap_clean"][self.train_samples["inst_shuffled_clean"]== self.semantic_instance_ids[i]] = i
+            self.test_samples["inst_shuffled_remap"][self.test_samples["inst_shuffled"]== self.semantic_instance_ids[i]] = i
 
         print()
         print("Training Sample Summary:")

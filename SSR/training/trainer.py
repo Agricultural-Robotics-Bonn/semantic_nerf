@@ -109,6 +109,7 @@ class SSRTrainer(object):
     def set_params(self):
         self.enable_semantic = self.config["experiment"]["enable_semantic"]
         self.enable_instance = self.config["experiment"]["enable_instance"]
+        self.enable_inst_association = self.config["experiment"]["enable_inst_association"]
 
         #render options
         self.n_rays = eval(self.config["render"]["N_rays"])  if isinstance(self.config["render"]["N_rays"], str) \
@@ -974,6 +975,10 @@ class SSRTrainer(object):
         if self.enable_semantic:
             sem_logits_coarse = output_dict["sem_logits_coarse"] # N_rays x num_classes
             sem_label_coarse = logits_2_label(sem_logits_coarse)  # N_rays
+        if self.enable_instance:
+            instance_logits_coarse = output_dict["instance_logits_coarse"] # N_rays x num_classes
+            instance_label_coarse = logits_2_label(instance_logits_coarse)  # N_rays
+
 
         if self.N_importance > 0:
             rgb_fine = output_dict["rgb_fine"]
@@ -984,6 +989,9 @@ class SSRTrainer(object):
             if self.enable_semantic:
                 sem_logits_fine = output_dict["sem_logits_fine"]
                 sem_label_fine = logits_2_label(sem_logits_fine)
+            if self.enable_instance:
+                instance_logits_fine = output_dict["instance_logits_fine"]
+                instance_label_fine = logits_2_label(instance_logits_fine)
 
         self.optimizer.zero_grad()
 
@@ -993,6 +1001,11 @@ class SSRTrainer(object):
             semantic_loss_coarse = crossentropy_loss(sem_logits_coarse, sampled_gt_semantic)
         else:
             semantic_loss_coarse = torch.tensor(0)
+        
+        if self.enable_instance and instance_available:
+            instance_loss_coarse = crossentropy_loss_instance(instance_logits_coarse, sampled_gt_instance)
+        else:
+            instance_loss_coarse = torch.tensor(0)
 
 
         with torch.no_grad():
@@ -1000,10 +1013,17 @@ class SSRTrainer(object):
             
         if self.N_importance > 0:
             img_loss_fine = img2mse(rgb_fine, sampled_gt_rgb)
+            
             if self.enable_semantic and sematic_available:
                 semantic_loss_fine = crossentropy_loss(sem_logits_fine, sampled_gt_semantic)
             else:
                 semantic_loss_fine = torch.tensor(0)
+            
+            if self.enable_instance and instance_available:
+                instance_loss_fine = crossentropy_loss_instance(instance_logits_fine, sampled_gt_instance)
+            else:
+                instance_loss_fine = torch.tensor(0)
+
             with torch.no_grad():
                 psnr_fine = mse2psnr(img_loss_fine)
         else:
@@ -1012,10 +1032,10 @@ class SSRTrainer(object):
 
         total_img_loss = img_loss_coarse + img_loss_fine
         total_sem_loss = semantic_loss_coarse + semantic_loss_fine
-
+        total_instance_loss = instance_loss_coarse + instance_loss_fine
         
         wgt_sem_loss = float(self.config["train"]["wgt_sem"])
-        total_loss = total_img_loss + total_sem_loss*wgt_sem_loss
+        total_loss = total_img_loss + total_sem_loss*wgt_sem_loss + total_instance_loss*wgt_sem_loss
 
         total_loss.backward()
         self.optimizer.step()
@@ -1034,9 +1054,11 @@ class SSRTrainer(object):
             self.tfb_viz.vis_scalars(global_step,
                                     [img_loss_coarse, img_loss_fine, total_img_loss,
                                     semantic_loss_coarse, semantic_loss_fine, total_sem_loss, total_sem_loss*wgt_sem_loss,
+                                    instance_loss_coarse, instance_loss_fine, total_instance_loss, total_instance_loss*wgt_sem_loss,
                                     total_loss],
                                     ['Train/Loss/img_loss_coarse', 'Train/Loss/img_loss_fine', 'Train/Loss/total_img_loss', 
                                     'Train/Loss/semantic_loss_coarse', 'Train/Loss/semantic_loss_fine', 'Train/Loss/total_sem_loss', 'Train/Loss/weighted_total_sem_loss',
+                                    'Train/Loss/instance_loss_coarse', 'Train/Loss/instance_loss_fine', 'Train/Loss/total_instance_loss', 'Train/Loss/weighted_total_instance_loss',
                                     'Train/Loss/total_loss'])
 
             # add raw transparancy value into tfb histogram
@@ -1075,8 +1097,10 @@ class SSRTrainer(object):
             os.makedirs(trainsavedir, exist_ok=True)
             print(' {} train images'.format(self.num_train))
             with torch.no_grad():
-                # rgbs, disps, deps, vis_deps, sems, vis_sems
-                rgbs, disps, deps, vis_deps, sems, vis_sems, sem_uncers, vis_sem_uncers = self.render_path(self.rays_vis, save_dir=trainsavedir)
+                (rgbs, disps,
+                deps, vis_deps,
+                sems, vis_sems, sem_uncers, vis_sem_uncers,
+                instances, vis_instances, inst_uncers, vis_inst_uncers) = self.render_path(self.rays_vis, save_dir=trainsavedir)
                 #  numpy array of shape [B,H,W,C] or [B,H,W]
             print('Saved training set')
 
@@ -1156,7 +1180,10 @@ class SSRTrainer(object):
             os.makedirs(testsavedir, exist_ok=True)
             print(' {} test images'.format(self.num_test))
             with torch.no_grad():
-                rgbs, disps, deps, vis_deps, sems, vis_sems, sem_uncers, vis_sem_uncers = self.render_path(self.rays_test, save_dir=testsavedir)
+                (rgbs, disps,
+                deps, vis_deps,
+                sems, vis_sems, sem_uncers, vis_sem_uncers,
+                instances, vis_instances, inst_uncers, vis_inst_uncers) = self.render_path(self.rays_test, save_dir=testsavedir)
             print('Saved test set')
 
 
@@ -1170,6 +1197,11 @@ class SSRTrainer(object):
                     # mask out void regions for better visualisation
                     for idx in range(vis_sems.shape[0]):
                         vis_sems[idx][self.test_semantic_scaled[idx]==self.ignore_label, :] = 0
+                
+                if self.enable_instance:
+                    # mask out void regions for better visualisation
+                    for idx in range(vis_instances.shape[0]):
+                        vis_sems[idx][self.test_instance_scaled[idx]==self.ignore_label, :] = 0
 
                 batch_test_img_mse = img2mse(torch.from_numpy(rgbs), self.test_image_scaled.cpu())
                 batch_test_img_psnr = mse2psnr(batch_test_img_mse)
@@ -1182,6 +1214,10 @@ class SSRTrainer(object):
             if self.enable_semantic:
                 imageio.mimwrite(os.path.join(testsavedir, 'sem.mp4'), vis_sems, fps=30, quality=8)
                 imageio.mimwrite(os.path.join(testsavedir, 'sem_uncertainty.mp4'), vis_sem_uncers, fps=30, quality=8)
+            
+            if self.enable_instance:
+                imageio.mimwrite(os.path.join(testsavedir, 'inst.mp4'), vis_instances, fps=30, quality=8)
+                imageio.mimwrite(os.path.join(testsavedir, 'inst_uncertainty.mp4'), vis_inst_uncers, fps=30, quality=8)
 
             # add rendered image into tf-board
             self.tfb_viz.tb_writer.add_image('Test/rgb', rgbs, global_step, dataformats='NHWC')
@@ -1218,13 +1254,41 @@ class SSRTrainer(object):
 
                     tqdm.write(f"[Testing Metric against GT Preds] Iter: {global_step} "
                         f"mIoU: {miou_test}, total_acc: {total_accuracy_test}, avg_acc: {class_average_accuracy_test}")
-                        
+
+            if self.enable_instance:
+                self.tfb_viz.tb_writer.add_image('Test/vis_instance_label', vis_instances, global_step, dataformats='NHWC')
+                self.tfb_viz.tb_writer.add_image('Test/vis_instance_uncertainty', vis_inst_uncers, global_step, dataformats='NHWC')
+
+                # add segmentation quantative metrics during testung into tfb
+                miou_test, miou_test_validclass, total_accuracy_test, class_average_accuracy_test, ious_test = \
+                calculate_segmentation_metrics(true_labels=self.test_instance_scaled, predicted_labels=instances, 
+                number_classes=self.num_valid_instances, ignore_label=self.ignore_label)
+                # number_classes=self.num_instance_class-1 to exclude void class
+                self.tfb_viz.vis_scalars(global_step,
+                        [miou_test, miou_test_validclass, total_accuracy_test, class_average_accuracy_test],
+                        ['Test/Metric/inst_mIoU', 'Test/Metric/inst_mIoU_validclass', 'Test/Metric/inst_total_acc', 'Test/Metric/inst_avg_acc'])
+
+
+                if dataset_type == "replica_nyu_cnn": 
+                    # we also evaluate the rendering against the trained CNN labels in addition to perfect GT labels
+                    miou_test, miou_test_validclass, total_accuracy_test, class_average_accuracy_test, ious_test = \
+                    calculate_segmentation_metrics(true_labels=self.test_instance_gt_scaled, predicted_labels=instances, 
+                    number_classes=self.num_valid_instances, ignore_label=self.ignore_label)
+                    self.tfb_viz.vis_scalars(global_step,
+                            [miou_test, miou_test_validclass, total_accuracy_test, class_average_accuracy_test],
+                            ['Test/Metric/inst_mIoU_GT', 'Test/Metric/inst_mIoU_GT_validclass','Test/Metric/inst_total_acc_GT', 'Test/Metric/inst_avg_acc_GT'])
+
+                    tqdm.write(f"[Testing inst Metric against GT Preds] Iter: {global_step} "
+                        f"inst_mIoU: {miou_test}, inst_total_acc: {total_accuracy_test}, inst_avg_acc: {class_average_accuracy_test}")
+
         if global_step%self.config["logging"]["step_log_print"]==0:
             tqdm.write(f"[TRAIN] Iter: {global_step} "
                        f"Loss: {total_loss.item()} "
                        f"rgb_total_loss: {total_img_loss.item()}, rgb_coarse: {img_loss_coarse.item()}, rgb_fine: {img_loss_fine.item()}, "
                        f"sem_total_loss: {total_sem_loss.item()}, weighted_sem_total_loss: {total_sem_loss.item()*wgt_sem_loss}, "
                        f"semantic_loss: {semantic_loss_coarse.item()}, semantic_fine: {semantic_loss_fine.item()}, "
+                       f"inst_total_loss: {total_instance_loss.item()}, weighted_inst_total_loss: {total_instance_loss.item()*wgt_sem_loss}, "
+                       f"instance_loss: {instance_loss_coarse.item()}, instance_fine: {instance_loss_fine.item()}, "
                        f"PSNR_coarse: {psnr_coarse.item()}, PSNR_fine: {psnr_fine.item()}")
 
 
@@ -1238,9 +1302,15 @@ class SSRTrainer(object):
 
         sems = []
         vis_sems = []
-        
-        entropys = []
-        vis_entropys = []
+
+        sem_entropys = []
+        vis_sem_entropys = []
+
+        instances = []
+        vis_instances = []
+
+        inst_entropys = []
+        vis_inst_entropys = []
 
         to8b_np = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
         to8b = lambda x: (255 * torch.clamp(x, 0, 1)).type(torch.uint8)
@@ -1262,13 +1332,25 @@ class SSRTrainer(object):
 
             if self.enable_semantic:
                 sem_label_coarse = logits_2_label(output_dict["sem_logits_coarse"])
-                sem_uncertainty_coarse = logits_2_uncertainty(output_dict["sem_logits_coarse"])
-                vis_sem_label_coarse = self.valid_colour_map[sem_label_coarse]
                 # shift pred label by +1 to shift the first valid class to use the first valid colour-map instead of the void colour-map
                 sem_label = sem_label_coarse
-                vis_sem = vis_sem_label_coarse
-                sem_uncertainty = sem_uncertainty_coarse
+                if self.config['logging']['render']['semantic']:
+                    vis_sem_label_coarse = self.valid_colour_map[sem_label_coarse]
+                    vis_sem = vis_sem_label_coarse
+                if self.config['logging']['render']['sem_uncert']:
+                    sem_uncertainty_coarse = logits_2_uncertainty(output_dict["sem_logits_coarse"])
+                    sem_uncertainty = sem_uncertainty_coarse
 
+            if self.enable_instance:
+                instance_label_coarse = logits_2_label(output_dict["instance_logits_coarse"])
+                # shift pred label by +1 to shift the first valid class to use the first valid colour-map instead of the void colour-map
+                instance_label = instance_label_coarse
+                if self.config['logging']['render']['instance']:
+                    vis_instance_label_coarse = self.valid_colour_map_instance[instance_label_coarse]
+                    vis_instance = vis_instance_label_coarse
+                if self.config['logging']['render']['inst_uncert']:
+                    instance_uncertainty_coarse = logits_2_uncertainty(output_dict["instance_logits_coarse"])
+                    instance_uncertainty = instance_uncertainty_coarse
 
             if self.N_importance > 0:
                 rgb_fine = output_dict["rgb_fine"]
@@ -1281,35 +1363,67 @@ class SSRTrainer(object):
 
                 if self.enable_semantic:
                     sem_label_fine = logits_2_label(output_dict["sem_logits_fine"])
-                    sem_uncertainty_fine = logits_2_uncertainty(output_dict["sem_logits_fine"])
-                    vis_sem_label_fine = self.valid_colour_map[sem_label_fine]  
                     # shift pred label by +1 to shift the first valid class to use the first valid colour-map instead of the void colour-map
                     sem_label = sem_label_fine
-                    vis_sem = vis_sem_label_fine
-                    sem_uncertainty = sem_uncertainty_fine
+                    if self.config['logging']['render']['semantic']:
+                        vis_sem_label_fine = self.valid_colour_map[sem_label_fine]  
+                        vis_sem = vis_sem_label_fine
+                    if self.config['logging']['render']['sem_uncert']:
+                        sem_uncertainty_fine = logits_2_uncertainty(output_dict["sem_logits_fine"])
+                        sem_uncertainty = sem_uncertainty_fine
+
+                if self.enable_instance:
+                    instance_label_fine = logits_2_label(output_dict["instance_logits_fine"])
+                    # shift pred label by +1 to shift the first valid class to use the first valid colour-map instead of the void colour-map
+                    instance_label = instance_label_fine
+                    if self.config['logging']['render']['instance']:
+                        vis_instance_label_fine = self.valid_colour_map_instance[instance_label_fine]  
+                        vis_instance = vis_instance_label_fine
+                    if self.config['logging']['render']['inst_uncert']:
+                        instance_uncertainty_fine = logits_2_uncertainty(output_dict["instance_logits_fine"])
+                        instance_uncertainty = instance_uncertainty_fine
         
             rgb = rgb.cpu().numpy().reshape((self.H_scaled, self.W_scaled, 3))
             depth = depth.cpu().numpy().reshape((self.H_scaled, self.W_scaled))
             disp = disp.cpu().numpy().reshape((self.H_scaled, self.W_scaled))
 
             rgbs.append(rgb)
-            disps.append(disp)
+            
+            if self.config['logging']['render']['disparity']:
+                disps.append(disp)
 
             deps.append(depth)  # save depth in mm
-            vis_deps.append(depth2rgb(depth, min_value=self.near, max_value=self.far))
+            if self.config['logging']['render']['depth']:
+                vis_deps.append(depth2rgb(depth, min_value=self.near, max_value=self.far))
 
 
             if self.enable_semantic:
                 sem_label = sem_label.cpu().numpy().astype(np.uint8).reshape((self.H_scaled, self.W_scaled))
-                vis_sem = vis_sem.cpu().numpy().astype(np.uint8).reshape((self.H_scaled, self.W_scaled, 3))
-                sem_uncertainty = sem_uncertainty.cpu().numpy().reshape((self.H_scaled, self.W_scaled))
-                vis_sem_uncertainty = depth2rgb(sem_uncertainty)
-
+                
                 sems.append(sem_label)
-                vis_sems.append(vis_sem)
+                if self.config['logging']['render']['semantic']:
+                    vis_sem = vis_sem.cpu().numpy().astype(np.uint8).reshape((self.H_scaled, self.W_scaled, 3))
+                    vis_sems.append(vis_sem)
 
-                entropys.append(sem_uncertainty)
-                vis_entropys.append(vis_sem_uncertainty)
+                if self.config['logging']['render']['sem_uncert']:
+                    sem_uncertainty = sem_uncertainty.cpu().numpy().reshape((self.H_scaled, self.W_scaled))
+                    vis_sem_uncertainty = depth2rgb(sem_uncertainty)
+                    sem_entropys.append(sem_uncertainty)
+                    vis_sem_entropys.append(vis_sem_uncertainty)
+            
+            if self.enable_instance:
+                instance_label = instance_label.cpu().numpy().astype(np.uint8).reshape((self.H_scaled, self.W_scaled))
+
+                instances.append(instance_label)
+                if self.config['logging']['render']['instance']:
+                    vis_instance = vis_instance.cpu().numpy().astype(np.uint8).reshape((self.H_scaled, self.W_scaled, 3))
+                    vis_instances.append(vis_instance)
+
+                if self.config['logging']['render']['inst_uncert']:
+                    instance_uncertainty = instance_uncertainty.cpu().numpy().reshape((self.H_scaled, self.W_scaled))
+                    vis_instance_uncertainty = depth2rgb(instance_uncertainty)
+                    inst_entropys.append(instance_uncertainty)
+                    vis_inst_entropys.append(vis_instance_uncertainty)
 
             if i==0:
                 print(rgb.shape, disp.shape)
@@ -1317,10 +1431,7 @@ class SSRTrainer(object):
             if save_dir is not None:
                 assert os.path.exists(save_dir)
                 rgb8 = to8b_np(rgbs[-1])
-                disp = disps[-1].astype(np.uint16)
                 dep_mm = (deps[-1]*1000).astype(np.uint16)
-                vis_dep = vis_deps[-1]
-
 
                 rgb_filename = os.path.join(save_dir, 'rgb_{:03d}.png'.format(i))
                 disp_filename = os.path.join(save_dir, 'disp_{:03d}.png'.format(i))
@@ -1329,10 +1440,10 @@ class SSRTrainer(object):
                 vis_depth_filename = os.path.join(save_dir, 'vis_depth_{:03d}.png'.format(i))
 
                 imageio.imwrite(rgb_filename, rgb8)
-                imageio.imwrite(disp_filename, disp, format="png", prefer_uint8=False)
+                if len(disps): imageio.imwrite(disp_filename, disps[-1], format="png", prefer_uint8=False)
 
                 imageio.imwrite(depth_filename, dep_mm, format="png", prefer_uint8=False)
-                imageio.imwrite(vis_depth_filename, vis_dep)
+                if len(vis_deps): imageio.imwrite(vis_depth_filename, vis_deps[-1])
                 
                 if self.enable_semantic:
 
@@ -1342,20 +1453,27 @@ class SSRTrainer(object):
                     entropy_filename = os.path.join(save_dir, 'entropy_{:03d}.png'.format(i))
                     vis_entropy_filename = os.path.join(save_dir, 'vis_entropy_{:03d}.png'.format(i))
                     sem = sems[-1]
-                    vis_sem = vis_sems[-1]
-
-
-                    sem_uncer = to8b_np(entropys[-1])        
-                    vis_sem_uncer = vis_entropys[-1]
 
                     imageio.imwrite(label_filename, sem)
-                    imageio.imwrite(vis_label_filename, vis_sem)
+                    if vis_sems: imageio.imwrite(vis_label_filename, vis_sems[-1])
+
+                    if len(sem_entropys): imageio.imwrite(entropy_filename, sem_entropys[-1])
+                    if len(vis_sem_entropys): imageio.imwrite(vis_entropy_filename, vis_sem_entropys[-1])
                 
-                    imageio.imwrite(label_filename, sem)
-                    imageio.imwrite(vis_label_filename, vis_sem)
+                if self.enable_instance:
 
-                    imageio.imwrite(entropy_filename, sem_uncer)
-                    imageio.imwrite(vis_entropy_filename, vis_sem_uncer)
+                    label_filename = os.path.join(save_dir, 'label_{:03d}.png'.format(i))
+                    vis_label_filename = os.path.join(save_dir, 'vis_label_{:03d}.png'.format(i))
+
+                    entropy_filename = os.path.join(save_dir, 'entropy_{:03d}.png'.format(i))
+                    vis_entropy_filename = os.path.join(save_dir, 'vis_entropy_{:03d}.png'.format(i))
+                    instance = instances[-1]
+                
+                    imageio.imwrite(label_filename, instance)
+                    if len(vis_instances): imageio.imwrite(vis_label_filename, vis_instances[-1])
+
+                    if len(inst_entropys): imageio.imwrite(entropy_filename, inst_entropys[-1])
+                    if len(vis_inst_entropys): imageio.imwrite(vis_entropy_filename, vis_inst_entropys[-1])
 
         rgbs = np.stack(rgbs, 0)
         disps = np.stack(disps, 0)
@@ -1365,11 +1483,26 @@ class SSRTrainer(object):
         if self.enable_semantic:
             sems = np.stack(sems, 0)
             vis_sems = np.stack(vis_sems, 0)
-            entropys = np.stack(entropys, 0)
-            vis_entropys = np.stack(vis_entropys, 0)
+            sem_entropys = np.stack(sem_entropys, 0)
+            vis_sem_entropys = np.stack(vis_sem_entropys, 0)
         else:
             sems = None
             vis_sems = None
-            entropys = None
-            vis_entropys = None
-        return rgbs, disps, deps, vis_deps, sems, vis_sems, entropys, vis_entropys
+            sem_entropys = None
+            vis_sem_entropys = None
+
+        if self.enable_instance:
+            instances = np.stack(instances, 0)
+            vis_instances = np.stack(vis_instances, 0)
+            inst_entropys = np.stack(inst_entropys, 0)
+            vis_inst_entropys = np.stack(vis_inst_entropys, 0)
+        else:
+            instances = None
+            vis_instances = None
+            inst_entropys = None
+            vis_inst_entropys = None
+
+        return (rgbs, disps,
+                deps, vis_deps,
+                sems, vis_sems, sem_entropys, vis_sem_entropys,
+                instances, vis_instances, inst_entropys, vis_inst_entropys)
