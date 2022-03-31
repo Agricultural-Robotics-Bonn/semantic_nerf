@@ -890,6 +890,14 @@ class SSRTrainer(object):
             embeddirs_fn, input_ch_views = get_embedder(self.config["render"]["multires_views"],
                                                         self.config["render"]["i_embed"],
                                                         scalar_factor=1)
+        input_ch_frames = 0
+        embedframes_fn = None
+        if self.enable_inst_association:
+            embedframes_fn, input_ch_frames = get_embedder(self.config["render"]["multires_frames"],
+                                                        self.config["render"]["i_embed"],
+                                                        scalar_factor=1)
+
+
         # extra output channel if resampling fine NeRF
         output_ch = 5 if self.N_importance > 0 else 4
 
@@ -904,18 +912,22 @@ class SSRTrainer(object):
 
         model = nerf_model(enable_semantic = self.enable_semantic, num_semantic_classes=self.num_valid_semantic_class,
                      enable_instance = self.enable_instance, num_instances=num_predicted_instances,
+                     enable_inst_shuffled=self.enable_inst_association,
                      D=self.config["model"]["netdepth"], W=self.config["model"]["netwidth"],
-                     input_ch=input_ch, output_ch=output_ch, skips=skips,
-                     input_ch_views=input_ch_views, use_viewdirs=self.config["render"]["use_viewdirs"]).cuda()
+                     input_ch=input_ch, input_ch_views=input_ch_views, input_ch_frame=input_ch_frames,
+                     output_ch=output_ch, skips=skips,
+                     use_viewdirs=self.config["render"]["use_viewdirs"]).cuda()
         grad_vars = list(model.parameters())
 
         model_fine = None
         if self.N_importance > 0:
             model_fine = nerf_model(enable_semantic = self.enable_semantic, num_semantic_classes=self.num_valid_semantic_class,
                               enable_instance = self.enable_instance, num_instances=num_predicted_instances,
+                              enable_inst_shuffled=self.enable_inst_association,
                               D=self.config["model"]["netdepth_fine"], W=self.config["model"]["netwidth_fine"],
-                              input_ch=input_ch, output_ch=output_ch, skips=skips,
-                              input_ch_views=input_ch_views, use_viewdirs=self.config["render"]["use_viewdirs"]).cuda()
+                              input_ch=input_ch, input_ch_views=input_ch_views, input_ch_frame=input_ch_frames,
+                              output_ch=output_ch, skips=skips,
+                            use_viewdirs=self.config["render"]["use_viewdirs"]).cuda()
             grad_vars += list(model_fine.parameters())
 
         # Create optimizer
@@ -925,6 +937,7 @@ class SSRTrainer(object):
         self.ssr_net_fine = model_fine
         self.embed_fn = embed_fn
         self.embeddirs_fn = embeddirs_fn
+        self.embedframes_fn = embedframes_fn
         self.optimizer = optimizer
 
     # optimisation step

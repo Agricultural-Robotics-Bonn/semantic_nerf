@@ -76,8 +76,14 @@ class Semantic_NeRF(nn.Module):
     Compared to the NeRF class wich also predicts semantic logits from MLPs, here we make the semantic label only a function of 3D position 
     instead of both positon and viewing directions.
     """
-    def __init__(self, enable_semantic, num_semantic_classes, enable_instance=False, num_instances=0, D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips=[4], use_viewdirs=False,
-                 ):
+    def __init__(self,
+        enable_semantic, num_semantic_classes,
+        enable_instance=False, num_instances=0,
+        enable_inst_shuffled=False,
+        D=8, W=256,
+        input_ch=3, input_ch_views=3, input_ch_frame=1,
+        output_ch=4, skips=[4], use_viewdirs=False,
+        ):
         super(Semantic_NeRF, self).__init__()
         """
                 D: number of layers for density (sigma) encoder
@@ -90,10 +96,12 @@ class Semantic_NeRF(nn.Module):
         self.W = W
         self.input_ch = input_ch
         self.input_ch_views = input_ch_views
+        self.input_ch_frame = input_ch_frame
         self.skips = skips
         self.use_viewdirs = use_viewdirs
         self.enable_semantic = enable_semantic
         self.enable_instance = enable_instance
+        self.enable_inst_shuffled = enable_inst_shuffled
 
         # build the encoder
         self.pts_linears = nn.ModuleList(
@@ -111,6 +119,9 @@ class Semantic_NeRF(nn.Module):
                 self.semantic_linear = nn.Sequential(fc_block(W, W // 2), nn.Linear(W // 2, num_semantic_classes))
             if enable_instance:
                 self.instance_linear = nn.Sequential(fc_block(W, W // 2), nn.Linear(W // 2, num_instances))
+            if enable_inst_shuffled:
+                # add frame number as extra input
+                self.inst_shuffled_linear = nn.Sequential(fc_block(input_ch_frame + W, W // 2), nn.Linear(W // 2, num_instances))
             self.rgb_linear = nn.Linear(W // 2, 3)
         else:
             self.output_linear = nn.Linear(W, output_ch)
@@ -122,7 +133,7 @@ class Semantic_NeRF(nn.Module):
             x: (B, self.in_channels_xyz(+self.in_channels_dir))
                the embedded vector of 3D xyz position and viewing direction
         """
-        input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
+        input_pts, input_views, input_frames = torch.split(x, [self.input_ch, self.input_ch_views, self.input_ch_frame], dim=-1)
         h = input_pts
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
@@ -137,23 +148,29 @@ class Semantic_NeRF(nn.Module):
                 sem_logits = self.semantic_linear(h)
             if self.enable_instance:
                 instance_logits = self.instance_linear(h)
+            if self.enable_inst_shuffled:
+                h_frames = torch.cat([feature, input_frames], -1)
+                inst_shuffled_logits = self.inst_shuffled_linear(h_frames)
             feature = self.feature_linear(h)
 
-            h = torch.cat([feature, input_views], -1)
+
+            h_views = torch.cat([feature, input_views], -1)
 
             for i, l in enumerate(self.views_linears):
-                h = self.views_linears[i](h)
-                h = F.relu(h)
+                h_views = self.views_linears[i](h_views)
+                h_views = F.relu(h_views)
                 
             if show_endpoint:
-                endpoint_feat = h
-            rgb = self.rgb_linear(h)
+                endpoint_feat = h_views
+            rgb = self.rgb_linear(h_views)
 
             outputs = torch.cat([rgb, alpha], -1)
             if self.enable_semantic:
                 outputs = torch.cat([outputs, sem_logits], -1)
             if self.enable_instance:
                 outputs = torch.cat([outputs, instance_logits], -1)
+            if self.enable_inst_shuffled:
+                outputs = torch.cat([outputs, inst_shuffled_logits], -1)
             
         else:
             outputs = self.output_linear(h)
